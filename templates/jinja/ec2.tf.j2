@@ -1,0 +1,75 @@
+provider "aws" {
+  region = "{{ region }}"
+}
+
+resource "aws_kms_key" "ebs" {
+  description             = "KMS key for EC2 EBS encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  tags = {
+    Environment = "{{ environment }}"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_security_group" "instance_sg" {
+  name        = "{{ environment }}-sg"
+  description = "Security group for EC2 instance with restricted access"
+  vpc_id      = "{{ vpc_id }}"
+
+  {% for port in allowed_ingress_ports %}
+  ingress {
+    description      = "Restricted inbound traffic on port {{ port }}"
+    from_port        = {{ port }}
+    to_port          = {{ port }}
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+  {% endfor %}
+
+  egress {
+    description = "Allow secure outbound web traffic"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Environment = "{{ environment }}"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_instance" "app_instance" {
+  ami           = "{{ ami | default('ami-0c55b159cbfafe1f0') }}"
+  instance_type = "{{ instance_type }}"
+
+  subnet_id                   = "{{ subnet_id }}"
+  vpc_security_group_ids      = [aws_security_group.instance_sg.id]
+  associate_public_ip_address = false
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  root_block_device {
+    volume_type           = "gp3"
+    volume_size           = {{ volume_size | default(20) }}
+    encrypted             = true
+    kms_key_id            = aws_kms_key.ebs.arn
+    delete_on_termination = true
+  }
+
+  monitoring = true
+
+  tags = {
+    Name        = "{{ environment }}-app"
+    Environment = "{{ environment }}"
+    ManagedBy   = "terraform"
+  }
+}

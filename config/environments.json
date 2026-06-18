@@ -1,0 +1,14 @@
+{
+  "dev": {
+    "region": "us-west-2"
+  },
+  "qa": {
+    "region": "ap-south-1"
+  },
+  "staging": {
+    "region": "us-east-1"
+  },
+  "prod": {
+    "region": "eu-central-1"
+  }
+}

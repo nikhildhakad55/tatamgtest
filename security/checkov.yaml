@@ -1,0 +1,33 @@
+# Checkov Static Analysis Configuration File
+# Used by security_advisor.py scanner in the CI pipeline
+
+framework:
+  - terraform
+
+# Fail on any finding of HIGH severity or above
+soft-fail: false
+
+# Directory to scan
+directory:
+  - ../templates
+
+# Report configuration
+output: cli
+quiet: false
+verbose: false
+
+# Enforce CIS AWS foundations benchmark rules
+# (Specifically blocking critical missing items)
+check:
+  - CKV_AWS_135   # EBS encryption
+  - CKV_AWS_111   # VPC Flow Logs
+  - CKV_AWS_79    # IMDSv2
+  - CKV_AWS_18    # S3 Bucket detailed logging
+  - CKV_AWS_21    # S3 Versioning
+  - CKV_AWS_145   # S3 Encryption with KMS
+  - CKV_AWS_19    # S3 Public access block
+  - CKV_AWS_20    # S3 public read ACL
+  - CKV_AWS_158   # KMS key rotation enabled
+  - CKV_AWS_16    # RDS storage encrypted
+  - CKV_AWS_17    # RDS multi-AZ enabled
+  - CKV_AWS_89    # RDS public access block

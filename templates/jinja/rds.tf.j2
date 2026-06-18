@@ -1,0 +1,117 @@
+provider "aws" {
+  region = "{{ region }}"
+}
+
+resource "aws_kms_key" "rds_key" {
+  description             = "KMS key for RDS storage encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  tags = {
+    Environment = "{{ environment }}"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_db_subnet_group" "db_subnet" {
+  name        = "{{ environment }}-db-subnet-group"
+  subnet_ids  = {{ subnet_ids | tojson }}
+  description = "Private subnet group for RDS"
+
+  tags = {
+    Environment = "{{ environment }}"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_security_group" "db_sg" {
+  name        = "{{ environment }}-db-sg"
+  description = "Security group for RDS instance"
+  vpc_id      = "{{ vpc_id }}"
+
+  ingress {
+    description = "Allow MySQL traffic from within VPC"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/8"]
+  }
+
+  egress {
+    description = "Limit outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Environment = "{{ environment }}"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_db_instance" "db" {
+  identifier        = "{{ environment }}-db"
+  allocated_storage = {{ allocated_storage | default(20) }}
+  storage_type      = "gp3"
+  engine            = "mysql"
+  engine_version    = "8.0"
+  instance_class    = "{{ instance_class | default('db.t3.medium') }}"
+
+  db_name  = "{{ db_name | default('appdb') }}"
+  username = "{{ db_username | default('admin') }}"
+  password = "{{ db_password }}"
+
+  db_subnet_group_name   = aws_db_subnet_group.db_subnet.name
+  vpc_security_group_ids = [aws_security_group.db_sg.id]
+
+  publicly_accessible = false
+  storage_encrypted   = true
+  kms_key_id          = aws_kms_key.rds_key.arn
+
+  backup_retention_period   = {{ "30" if environment == "prod" else "7" }}
+  backup_window             = "03:00-04:00"
+  maintenance_window        = "Mon:04:00-Mon:05:00"
+  copy_tags_to_snapshot     = true
+  deletion_protection       = {{ "true" if environment == "prod" else "false" }}
+  skip_final_snapshot       = {{ "false" if environment == "prod" else "true" }}
+  final_snapshot_identifier = "{{ environment }}-db-final-snapshot"
+
+  multi_az = {{ "true" if environment == "prod" else "false" }}
+
+  performance_insights_enabled          = true
+  performance_insights_kms_key_id       = aws_kms_key.rds_key.arn
+  performance_insights_retention_period = 7
+  monitoring_interval                   = 60
+  monitoring_role_arn                   = aws_iam_role.rds_monitoring.arn
+
+  enabled_cloudwatch_logs_exports = ["error", "general", "slowquery"]
+
+  tags = {
+    Environment = "{{ environment }}"
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_iam_role" "rds_monitoring" {
+  name = "{{ environment }}-rds-mon-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "monitoring.rds.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "rds_monitoring_attach" {
+  role       = aws_iam_role.rds_monitoring.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
+}

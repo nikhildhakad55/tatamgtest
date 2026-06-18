@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  orchestrator:
+    build: .
+    image: iac-self-service-orchestrator:latest
+    container_name: iac-orchestrator
+    ports:
+      - "8000:8000"
+    environment:
+      # Automatically pass current AWS credentials from the host shell
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - AWS_DEFAULT_REGION
+      - INFRACOST_API_KEY
+      - JIRA_API_TOKEN
+    # Optional: mount local directories for code-reloading in development
+    # volumes:
+    #   - ./orchestrator:/app/orchestrator
+    #   - ./templates:/app/templates
+    #   - ./config:/app/config

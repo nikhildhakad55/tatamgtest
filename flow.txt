@@ -1,0 +1,532 @@
+# Step 2 Deep Dive: Parameter Extraction → Code Generation → Security Scanning
+
+## The Real Flow (What Actually Happens)
+
+When a developer says: **"Create a 4 core 8GB RAM instance in staging VPC with only port 443 exposed"**
+
+The system does this:
+
+---
+
+## Phase 0: REQUEST PARSING (BEFORE Security Review)
+
+### Step 0A: Extract Parameters from Request
+The system parses the user's natural language request and extracts ALL needed details:
+
+```
+User Input: "Create a 4 core 8GB RAM instance in staging VPC with only port 443 exposed"
+
+EXTRACTED PARAMETERS:
+├── Instance Type: 4-core, 8GB RAM → maps to EC2 type (e.g., t3.large or m5.large)
+├── VPC: "staging VPC" → looks up staging VPC ID from AWS account
+├── Network: Staging VPC → determines subnets (public/private)
+├── Security Group: Port 443 ONLY → creates security group with INBOUND rule 443/tcp
+├── OS: NOT specified → defaults to Amazon Linux 2 (configurable default)
+├── Storage: NOT specified → defaults to 20GB gp3 EBS (configurable default)
+├── Region: NOT specified → defaults to us-east-1 or account default
+├── Tags: NOT specified → applies mandatory tags (Project, Owner, Environment, CostCenter)
+└── Other defaults: 
+    ├── Monitoring: CloudWatch enabled by default
+    ├── IMDSv2: Enforced by default
+    ├── Termination protection: Enabled for prod, disabled for dev/staging
+    └── Backup/snapshots: Based on environment
+```
+
+### Step 0B: Database Lookup - VPC Mapping
+
+The system has a configuration file or database:
+
+```json
+{
+  "vpcs": {
+    "staging": {
+      "vpc_id": "vpc-0a1b2c3d4e5f6g7h8",
+      "region": "us-east-1",
+      "azs": ["us-east-1a", "us-east-1b"],
+      "private_subnets": ["subnet-123", "subnet-456"],
+      "public_subnets": ["subnet-789", "subnet-012"],
+      "nat_gateway": true,
+      "environment": "staging"
+    },
+    "prod": {
+      "vpc_id": "vpc-prod123",
+      "region": "us-east-1",
+      "azs": ["us-east-1a", "us-east-1b", "us-east-1c"],
+      "private_subnets": ["subnet-p1", "subnet-p2", "subnet-p3"],
+      "public_subnets": ["subnet-pub1", "subnet-pub2"],
+      "nat_gateway": true,
+      "multi_az": true,
+      "environment": "prod"
+    }
+  },
+  "instance_types": {
+    "1_core_1gb": "t3.micro",
+    "1_core_2gb": "t3.small",
+    "2_core_4gb": "t3.medium",
+    "4_core_8gb": ["t3.large", "m5.large", "m6i.large"],  // options
+    "8_core_16gb": ["t3.xlarge", "m5.xlarge"]
+  },
+  "defaults": {
+    "os": "amazon_linux_2",
+    "storage_size_gb": 20,
+    "storage_type": "gp3",
+    "iops": 3000,
+    "throughput": 125,
+    "monitoring": "detailed",
+    "imdsv2_required": true,
+    "backup_enabled": {
+      "dev": false,
+      "staging": true,
+      "prod": true
+    }
+  }
+}
+```
+
+### Step 0C: Form/Dialog to Collect Missing Details
+
+If user didn't specify all parameters, the system can:
+
+**Option 1: Auto-fill with defaults** (full automation)
+- OS → Amazon Linux 2
+- Storage → 20GB gp3
+- Region → us-east-1
+- Monitoring → Enabled
+- Tags → Apply mandatory tags
+
+**Option 2: Ask user for clarification** (with UI form)
+```
+The system might show:
+
+┌─────────────────────────────────────────┐
+│  Complete Your EC2 Request              │
+├─────────────────────────────────────────┤
+│                                         │
+│  Instance Details:                      │
+│  ✓ 4 cores, 8GB RAM (t3.large)         │
+│  ✓ Staging VPC (vpc-0a1b2c...)         │
+│  ✓ Only port 443 inbound               │
+│                                         │
+│  Please confirm or update:              │
+│                                         │
+│  Operating System:                      │
+│  [ ✓ Amazon Linux 2 ][ ] Ubuntu 20.04] │
+│  [ ] Windows Server 2022 ]              │
+│                                         │
+│  Storage:                               │
+│  Size: [ 20  ] GB                       │
+│  Type: [ gp3 ▼ ] (gp3, io1, st1, sc1) │
+│  IOPS: [ 3000 ]                         │
+│                                         │
+│  Region: [ us-east-1 ▼ ]               │
+│                                         │
+│  Monitoring: [✓ CloudWatch Detailed ]   │
+│                                         │
+│  Tags:                                  │
+│  Project:   [ Booking System  ]         │
+│  Owner:     [ Team A          ]         │
+│  CostCenter:[ CC-001          ]         │
+│                                         │
+│  [ Submit ] [ Cancel ]                  │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## Phase 1: GENERATE TERRAFORM CODE
+
+Once all parameters are confirmed, the system generates Terraform code:
+
+### Step 1A: Template-Based Code Generation
+
+The system has **pre-built Terraform templates** for each resource type:
+
+```hcl
+# EC2 Template (auto-filled with parameters)
+resource "aws_instance" "app_server" {
+  # From extracted parameters:
+  ami                    = data.aws_ami.amazon_linux_2.id  # OS: Amazon Linux 2
+  instance_type          = "t3.large"                       # 4-core 8GB RAM
+  subnet_id              = aws_subnet.staging_private[0].id # Staging VPC subnet
+  security_groups        = [aws_security_group.app_sg.id]
+  
+  # Mandatory security hardening:
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"  # IMDSv2 mandatory
+    http_put_response_hop_limit = 1
+  }
+  
+  # Root volume (from parameters: 20GB gp3)
+  root_block_device {
+    volume_type           = "gp3"
+    volume_size           = 20
+    delete_on_termination = true
+    encrypted             = true  # Always encrypt
+    kms_key_id            = aws_kms_key.ebs.arn
+  }
+  
+  # Monitoring (from defaults: enabled)
+  monitoring = true
+  
+  # Tags (mandatory from request):
+  tags = {
+    Name        = "staging-app-server"
+    Environment = "staging"
+    Project     = "booking-system"  # From user or request
+    Owner       = "TeamA"           # From user or request
+    CostCenter  = "CC-001"          # From request form
+    ManagedBy   = "terraform"
+    CreatedBy   = "INFRA-104"       # Jira ticket reference
+  }
+}
+
+# Security Group (from parameter: only port 443)
+resource "aws_security_group" "app_sg" {
+  name_prefix = "app-"
+  description = "Application security group - port 443 only"
+  vpc_id      = data.aws_vpc.staging.id
+
+  # Inbound: Port 443 ONLY (from request parameter)
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]  # Or restricted based on security review
+  }
+
+  # Egress: Allow all outbound (can be restricted based on security review)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Environment = "staging"
+    ManagedBy   = "terraform"
+  }
+}
+
+# VPC Flow Logs (auto-added by security review)
+resource "aws_flow_log" "vpc_flow_logs" {
+  iam_role_arn    = aws_iam_role.vpc_flow_logs_role.arn
+  log_destination = aws_cloudwatch_log_group.vpc_flow_logs.arn
+  traffic_type    = "ALL"
+  vpc_id          = data.aws_vpc.staging.id
+
+  tags = {
+    Environment = "staging"
+    ManagedBy   = "terraform"
+  }
+}
+```
+
+### Step 1B: Security Hardening Applied Automatically
+
+During code generation, the system **applies security best practices**:
+
+```hcl
+SECURITY HARDENING CHECKLIST (Auto-Applied):
+
+✓ IMDSv2 Enforcement
+  metadata_options.http_tokens = "required"
+
+✓ EBS Encryption
+  root_block_device.encrypted = true
+  root_block_device.kms_key_id = aws_kms_key.ebs.arn
+
+✓ VPC Flow Logs (if missing from user request)
+  → ADDED automatically before security review
+
+✓ CloudWatch Monitoring
+  monitoring = true
+  cloudwatch_namespace = "CustomApp"
+
+✓ Security Group Least Privilege
+  → ONLY port 443 inbound (from user request)
+  → All other ports BLOCKED by default
+
+✓ Mandatory Tagging
+  → All resources tagged with Project, Owner, Environment, CostCenter
+
+✓ KMS Encryption for Secrets
+  → All sensitive data encrypted with customer-managed KMS keys
+
+✓ CloudTrail Logging
+  → All API calls logged and auditable
+```
+
+---
+
+## Phase 2: SECURITY SCANNING (Step 2 - SECURITY REVIEW)
+
+Now the generated code is scanned:
+
+### Step 2A: CIS AWS Benchmark Scan
+
+Tool used: **Prowler** or **Checkov** (scans Terraform code)
+
+```bash
+# Scan the generated Terraform code:
+prowler aws --benchmark cis_level2_aws
+
+# What gets checked:
+├── VPC Flow Logs enabled? ✓
+├── EC2 IMDSv2 enforced? ✓
+├── EBS encryption enabled? ✓
+├── Security group has least privilege? ✓
+├── CloudWatch monitoring enabled? ✓
+├── IAM policies follow least privilege? ✓
+├── No public access to databases? ✓
+├── KMS encryption enabled? ✓
+├── CloudTrail logging enabled? ✓
+└── Compliance with regulatory standards? ✓
+```
+
+### Step 2B: Scan Results
+
+```
+SCAN RESULTS:
+┌────────────────────────────────────────────┐
+│ Security Scan: INFRA-104                   │
+├────────────────────────────────────────────┤
+│                                            │
+│ ✓ PASSED (All checks OK):                 │
+│  • IMDSv2 enforced                         │
+│  • EBS encryption enabled                  │
+│  • VPC Flow Logs configured                │
+│  • Security group restricted to 443        │
+│  • CloudWatch monitoring enabled           │
+│  • Mandatory tags present                  │
+│  • KMS key-based encryption in place       │
+│                                            │
+│ Score: 10/10 - APPROVED                   │
+│                                            │
+└────────────────────────────────────────────┘
+
+Decision: ✓ APPROVED - Proceed to Cost Review
+```
+
+### Step 2C: What If Scan Fails?
+
+**Example: Missing VPC Flow Logs**
+
+```
+┌────────────────────────────────────────────┐
+│ Security Scan: INFRA-104                   │
+├────────────────────────────────────────────┤
+│                                            │
+│ ✗ FAILED (1 HIGH finding):                │
+│                                            │
+│ ⚠️  [HIGH] No VPC Flow Logs enabled        │
+│    Severity: HIGH                          │
+│    CIS Control: 3.10                       │
+│    Description: VPC Flow Logs should be    │
+│    enabled to monitor network traffic      │
+│                                            │
+│ 🔧 Remediation Steps:                     │
+│                                            │
+│ resource "aws_flow_log" "vpc" {            │
+│   iam_role_arn    = "..."                  │
+│   log_destination = "..."                  │
+│   traffic_type    = "ALL"                  │
+│   vpc_id          = aws_vpc.staging.id    │
+│ }                                          │
+│                                            │
+│ Status: BLOCKED - Fix required before     │
+│ proceeding                                 │
+│                                            │
+└────────────────────────────────────────────┘
+
+Action: System AUTO-ADDS remediation code
+        to Terraform and rescans
+```
+
+---
+
+## Complete Flow with Real Example
+
+```
+USER REQUEST (Natural Language):
+├─ "Create a 4 core 8GB RAM instance"
+├─ "In staging VPC"
+└─ "Only port 443 exposed to public"
+
+                    ↓
+
+PARAMETER EXTRACTION:
+├─ Instance Type: t3.large (4-core, 8GB)
+├─ VPC: staging → vpc-0a1b2c3d4e5f6g7h8
+├─ Region: us-east-1 (from VPC config)
+├─ OS: Amazon Linux 2 (default)
+├─ Storage: 20GB gp3 (default)
+├─ Security: Port 443 only (from request)
+└─ Tags: Project, Owner, Environment, Cost Center (mandatory)
+
+                    ↓
+
+TERRAFORM CODE GENERATION:
+├─ EC2 instance with all parameters
+├─ Security group (443 only)
+├─ KMS key for encryption
+├─ VPC Flow Logs (auto-added)
+├─ CloudWatch monitoring (auto-enabled)
+└─ Mandatory tags (auto-applied)
+
+                    ↓
+
+SECURITY SCANNING (CIS AWS Benchmark):
+├─ ✓ IMDSv2 enforced
+├─ ✓ EBS encrypted
+├─ ✓ VPC Flow Logs enabled
+├─ ✓ Security group least privilege
+├─ ✓ CloudWatch monitoring
+└─ Score: 10/10 - APPROVED
+
+                    ↓
+
+COST CALCULATION:
+├─ EC2 t3.large: $60.48/month
+├─ EBS 20GB gp3: $2.00/month
+├─ Data transfer: $0.08/month
+├─ CloudWatch: $80/month (with detailed monitoring)
+└─ TOTAL: $142.56/month
+
+                    ↓
+
+APPROVAL WORKFLOW:
+├─ Security Review: ✓ Approved
+├─ Cost Review: ✓ Approved
+├─ Architecture Review: ✓ Approved
+└─ Final Approval: ⏳ Awaiting stakeholder
+
+                    ↓
+
+EXECUTION (After Approval):
+├─ Terraform Apply
+├─ AWS resources provisioned
+├─ Audit trail created in Jira
+└─ Complete ✓
+```
+
+---
+
+## Key Technologies & Tools
+
+### 1. **Request Parsing**
+- **Tool**: Natural Language Processing (Claude API, regex patterns)
+- **Output**: Structured parameter object
+
+### 2. **Parameter Mapping**
+- **Config Database**: JSON/YAML with VPC, subnet, instance type mappings
+- **Defaults**: Pre-configured security hardening standards
+
+### 3. **Code Generation**
+- **Tool**: Terraform templating (Jinja2, HCL generation)
+- **Input**: Extracted parameters + security defaults
+- **Output**: Complete, validated Terraform code
+
+### 4. **Security Scanning**
+- **Tools**: Checkov, Prowler, TFLint
+- **Input**: Generated Terraform code
+- **Output**: Compliance report + remediation suggestions
+
+### 5. **Cost Estimation**
+- **Tool**: AWS Pricing API or Infracost
+- **Input**: Resource types, sizes, regions
+- **Output**: Cost breakdown
+
+### 6. **Approval Workflow**
+- **Tool**: Jira API + custom backend
+- **Input**: Security report, cost breakdown, Terraform code
+- **Output**: PR link, approval status
+
+### 7. **Execution & Audit**
+- **Tool**: Terraform CLI + CloudTrail
+- **Input**: Approved Terraform code
+- **Output**: Deployed resources + audit log
+
+---
+
+## What Happens If User Specifies More Details
+
+**Example: Developer provides MORE parameters**
+
+```
+Request: "Create a 4 core 8GB RAM instance in staging VPC 
+with only port 443 exposed, Ubuntu 20.04 OS, 50GB gp3 storage,
+disable public IP, enable enhanced monitoring"
+
+EXTRACTED PARAMETERS:
+├─ Instance Type: t3.large ✓
+├─ VPC: staging ✓
+├─ Port: 443 only ✓
+├─ OS: Ubuntu 20.04 (override default)
+├─ Storage: 50GB gp3 (override default)
+├─ Public IP: Disabled (override default)
+└─ Monitoring: Enhanced (override default)
+
+All user-specified values OVERRIDE the defaults!
+```
+
+---
+
+## Architecture Diagram (Simplified)
+
+```
+User Request
+    ↓
+NLP Parser (Extract parameters)
+    ↓
+Config Database (Map to VPC, instance type, etc.)
+    ↓
+Form/Dialog (Fill missing details)
+    ↓
+Terraform Code Generator
+    ↓
+Security Scanner (Checkov/Prowler)
+    ├─ If PASS → Proceed
+    └─ If FAIL → Auto-remediate → Rescan
+    ↓
+Cost Calculator (AWS Pricing API)
+    ↓
+Approval Workflow (Jira integration)
+    ├─ Security Review ✓
+    ├─ Cost Review ✓
+    ├─ Arch Review ✓
+    └─ Final Approval ⏳
+    ↓
+Execute (Terraform Apply)
+    ↓
+Audit Log (CloudTrail + Jira)
+```
+
+---
+
+## Summary
+
+**HOW THE SYSTEM KNOWS WHERE & WHAT TO DEPLOY:**
+
+1. **WHERE (Region, VPC, Subnets)**
+   - Extracted from user request or form
+   - Looked up in config database
+   - Example: "staging VPC" → vpc-0a1b2c3d4e5f6g7h8, us-east-1, subnets
+
+2. **WHAT (Instance type, OS, storage, specs)**
+   - Explicitly stated by user OR
+   - Defaults from config file OR
+   - Collected via form dialog
+
+3. **SECURITY (Port restrictions, encryption, monitoring)**
+   - Extracted from user request (port 443 only)
+   - Hardening applied automatically during code generation
+   - Validated via security scanning
+
+4. **COST (Calculated before approval)**
+   - Based on resource type, size, region
+   - AWS Pricing API lookup
+   - Shown in approval workflow
+
+All of this happens BEFORE security scanning - the generated code already includes all the details!
