@@ -1,0 +1,10 @@
+.env
+db_jira.json
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+test_bedrock_temp.py
+list_bedrock_models.py
+list_profiles.py
+test_bedrock_haiku.py
